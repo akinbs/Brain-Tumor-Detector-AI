@@ -1,17 +1,16 @@
 classdef app1 < matlab.apps.AppBase
 
-    
     properties (Access = public)
         UIFigure             matlab.ui.Figure
         UIAxes               matlab.ui.control.UIAxes
-        LoadImageButton      matlab.ui.control.Button   % Yeni eklenen buton
+        LoadImageButton      matlab.ui.control.Button
         SnflandrButton       matlab.ui.control.Button
         ADropDown            matlab.ui.control.DropDown
         ADropDownLabel       matlab.ui.control.Label
         BEYNTMRTEHSLabel     matlab.ui.control.Label
         DETECTORLampLabel    matlab.ui.control.Label
         DETECTORLamp         matlab.ui.control.Lamp
-        SelectedImagePath                      % Seçilen görüntü yolu
+        SelectedImagePath    % Seçilen görüntü yolu
     end
 
     methods (Access = private)
@@ -27,7 +26,7 @@ classdef app1 < matlab.apps.AppBase
             app.UIAxes.Position = [24 160 290 275];
             axis(app.UIAxes,'off');
 
-            % "Görsel Yükle" butonu (dropdown’un hemen altı)
+            % "Görsel Yükle" butonu
             app.LoadImageButton = uibutton(app.UIFigure,'push');
             app.LoadImageButton.Position = [517 315 106 22];
             app.LoadImageButton.Text     = 'Görsel Yükle';
@@ -58,8 +57,8 @@ classdef app1 < matlab.apps.AppBase
             app.ADropDownLabel.HorizontalAlignment= 'right';
             app.ADropDown = uidropdown(app.UIFigure);
             app.ADropDown.Position                = [517 350 106 22];
-            app.ADropDown.Items                   = {'resnet18','googlenet','alexnet','xception'};
-            app.ADropDown.Value                   = 'resnet18';
+            app.ADropDown.Items                   = {'yolov2','googlenet','alexnet','xception'};
+            app.ADropDown.Value                   = 'yolov2';
 
             % Detector lamp
             app.DETECTORLampLabel = uilabel(app.UIFigure);
@@ -68,6 +67,8 @@ classdef app1 < matlab.apps.AppBase
             app.DETECTORLampLabel.HorizontalAlignment= 'right';
             app.DETECTORLamp = uilamp(app.UIFigure);
             app.DETECTORLamp.Position                = [124 79 20 20];
+            % Başlangıçta yeşil renk (tümör algılanmadı)
+            app.DETECTORLamp.Color                  = [0 1 0];
 
             % Başlangıçta resim yok
             app.SelectedImagePath = '';
@@ -76,19 +77,24 @@ classdef app1 < matlab.apps.AppBase
         end
 
         function onLoadImage(app)
-            % Butona tıklanınca çalışır
+            % Yeni görsel yüklendiğinde öncesi temizle
             [f,p] = uigetfile({'*.jpg;*.png;*.bmp'},'Görsel Seçin');
             if isequal(f,0), return; end
             app.SelectedImagePath = fullfile(p,f);
             img = imread(app.SelectedImagePath);
             imshow(img,'Parent',app.UIAxes);
+
+            % Önceki sonuçları temizle
+            app.BEYNTMRTEHSLabel.Text      = 'BEYİN TÜMÖRÜ TEHŞİSİ';
+            app.BEYNTMRTEHSLabel.FontColor = [0.302 0.7451 0.9333];
+            app.DETECTORLamp.Color         = [0 1 0];
         end
 
         function SnflandrButtonPushed(app)
             % Model seçimi
             switch app.ADropDown.Value
-                case 'resnet18'
-                    modelFile = 'bestModel.mat';
+                case 'yolov2'
+                    modelFile = 'yolov2.mat';
                 case 'googlenet'
                     modelFile = 'brain_tumor_googlenet_model.mat';
                 case 'alexnet'
@@ -104,16 +110,7 @@ classdef app1 < matlab.apps.AppBase
             modelFolder   = fileparts(mfilename('fullpath'));
             modelFullPath = fullfile(modelFolder,modelFile);
             try
-                data   = load(modelFullPath);
-                fnames = fieldnames(data);
-                trainedNet = [];
-                for i = 1:numel(fnames)
-                    v = data.(fnames{i});
-                    if isa(v,'DAGNetwork')||isa(v,'SeriesNetwork')||isa(v,'dlnetwork')
-                        trainedNet = v; break;
-                    end
-                end
-                if isempty(trainedNet), error('Ağ bulunamadı.'); end
+                mdlData = load(modelFullPath);
             catch ME
                 app.BEYNTMRTEHSLabel.Text      = 'Model Yüklenemedi';
                 app.BEYNTMRTEHSLabel.FontColor = [1 0 0];
@@ -129,47 +126,57 @@ classdef app1 < matlab.apps.AppBase
 
             % Görseli oku & 3 kanala çıkar
             img = imread(app.SelectedImagePath);
-            if size(img,3)==1
+            if size(img,3) == 1
                 img = cat(3,img,img,img);
             end
 
-            % Ölçek ve normalize
-            inpSz = trainedNet.Layers(1).InputSize(1:2);
-            imgR  = imresize(img,inpSz);
-            imgS  = im2single(imgR);
+            % Hedef boyut ve başlangıç
+            inpSz       = [224 224];
+            imgR        = imresize(img, inpSz);
+            annotatedImg= imgR;
+            isTumor     = false;
+            mmPerPixel  = 0.5;  % ölçek bilgisi mm/piksel
 
-            % Sınıflandır
-            YP      = classify(trainedNet,imgS);
-            isTumor = strcmpi(string(YP),'yes');
-
-            % Annotasyon
-            annotatedImg = imgR;
-            if isTumor
-                gray   = rgb2gray(imgR);
-                grayF  = medfilt2(gray,[5 5]);
-                T      = adaptthresh(grayF,0.4,'ForegroundPolarity','bright');
-                bw     = imbinarize(grayF,T);
-                bw     = imopen(bw,strel('disk',5));
-                bw     = imfill(bw,'holes');
-                bw     = bwareaopen(bw,1000);
-                bw2    = imclearborder(bw);
-                stats  = regionprops(bw2,'Area','BoundingBox');
-                [~,idx] = max([stats.Area]);
-                bb = stats(idx).BoundingBox;
-                annotatedImg = insertShape(imgR,'Rectangle',bb,...
-                                           'LineWidth',3,'Color','red');
+            % YOLOv2 tespiti
+            if strcmp(app.ADropDown.Value,'yolov2')
+                detector = mdlData.detector;
+                [bboxes,scores] = detect(detector, imgR);
+                if ~isempty(bboxes)
+                    isTumor = true;
+                    [~,idx] = max(scores);
+                    bb = bboxes(idx,:);
+                    annotatedImg = insertShape(imgR,'Rectangle',bb,'LineWidth',3,'Color','yellow');
+                end
             end
-            imshow(annotatedImg,'Parent',app.UIAxes);
 
-            % Sonuç güncelle
+            % SAM segmentasyonu + çap hesaplama
             if isTumor
-                app.DETECTORLamp.Color        = [1 0 0];
-                app.BEYNTMRTEHSLabel.Text     = 'TÜMÖR ALGILANDI';
-                app.BEYNTMRTEHSLabel.FontColor= [1 0 0];
+                samObj     = segmentAnythingModel;
+                embeddings = extractEmbeddings(samObj, imgR);
+                for i = 1:size(bboxes,1)
+                    box  = bboxes(i,:);
+                    mask = segmentObjectsFromEmbeddings(samObj, embeddings, size(imgR), 'BoundingBox', box);
+                    annotatedImg = insertObjectMask(annotatedImg, mask);
+                    stats        = regionprops(mask, 'MajorAxisLength');
+                    diameterPx   = stats.MajorAxisLength;
+                    diameterMM   = diameterPx * mmPerPixel;
+                    textPos      = [box(1), box(2)-20];
+                    annotatedImg = insertText(annotatedImg, textPos, ...
+                        sprintf('Çap: %.1f mm', diameterMM), ...
+                        'FontSize',14, 'BoxColor','yellow','TextColor','black');
+                end
+            end
+
+            % Sonucu göster
+            imshow(annotatedImg,'Parent',app.UIAxes);
+            if isTumor
+                app.DETECTORLamp.Color         = [1 0 0];
+                app.BEYNTMRTEHSLabel.Text      = 'TÜMÖR ALGILANDI';
+                app.BEYNTMRTEHSLabel.FontColor = [1 0 0];
             else
-                app.DETECTORLamp.Color        = [0 1 0];
-                app.BEYNTMRTEHSLabel.Text     = 'TÜMÖR ALGILANMADI';
-                app.BEYNTMRTEHSLabel.FontColor= [0 1 0];
+                app.DETECTORLamp.Color         = [0 1 0];
+                app.BEYNTMRTEHSLabel.Text      = 'TÜMÖR ALGILANMADI';
+                app.BEYNTMRTEHSLabel.FontColor = [0 1 0];
             end
         end
     end
@@ -177,9 +184,10 @@ classdef app1 < matlab.apps.AppBase
     methods (Access = public)
         function app = app1
             createComponents(app)
-            registerApp(app,app.UIFigure)
-            if nargout==0, clear app; end
+            registerApp(app, app.UIFigure)
+            if nargout == 0, clear app; end
         end
+
         function delete(app)
             delete(app.UIFigure)
         end
